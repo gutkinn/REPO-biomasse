@@ -5,6 +5,8 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.cross_decomposition import PLSRegression
+import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -394,3 +396,25 @@ def print_models(X_df,y_df):
     m_RF = max(r2_scores,key=r2_scores.get)
 
     return {'LR':m_LR,'PR2':m_PR2,'PR3':m_PR3,'PLS':m_PLS,'RF':m_RF}
+
+def draw_plot(mode,degree,X_df,y_df):
+    if mode == 'RF' or mode == 'PLS':
+        degree = None
+
+    mae_scores,r2_scores,remaining_feats,[y_test,preds] = iterate_train_test(X_df,y_df,split=0.25,it_mode=mode,degree=degree)
+    f,ax = plt.subplots(figsize=(6,5))
+    plt.title(f'Modèle {mode} degré {degree}')
+
+    ax.plot([n for n in range(len(r2_scores))],r2_scores.values(),color='steelblue')
+    ax2 = ax.twinx()
+    ax2.plot([n for n in range(len(r2_scores))],mae_scores.values(),color='darkred')
+    ax.set_ylabel('R² score (bleu)')
+    ax.set_yscale('symlog')
+    ax.set_xlabel("Número d'itération")
+    ax2.set_ylabel('MAE score (rouge)')
+    formatter = ScalarFormatter()
+    formatter.set_scientific(False)
+    ax.yaxis.set_major_formatter(formatter)
+    plt.tight_layout()
+    plt.savefig(f'./out_data/precision_{mode}_{degree}.png')
+    plt.show()

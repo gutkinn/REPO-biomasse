@@ -8,14 +8,18 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import xarray as xr
 from helpers import *
+from shapely import geometry, buffer
 
-
-def main(in_pts_file,in_area_file,out_dir,year,month,it_mode,degree,download):
-    print('Connecting to openEO.')
+def main(in_pts_file,in_area_file,out_dir,year,month,it_mode,degree,download,point_extract):
+    print("Établissant une connexion à openEO.")
     connection = openeo.connect("https://openeo.dataspace.copernicus.eu").authenticate_oidc()
-    print(download)
-    print('Extracting training features from openEO.')
-    prodsites, points_out,bands = extract_training_features(in_pts_file,out_dir,year,connection,download)
+
+    if point_extract:
+        print("Extraction des points d'entraînement d'openEO.")
+        prodsites, points_out, bands = extract_training_features(in_pts_file,out_dir,year,connection,point_extract)
+    else:
+        print("Points d'entraînement déjà extraits.")
+        prodsites, points_out, bands = extract_training_features(in_pts_file,out_dir,year,connection,point_extract)
 
     dict_dates = {}
 
@@ -26,24 +30,30 @@ def main(in_pts_file,in_area_file,out_dir,year,month,it_mode,degree,download):
         dict_dates[key] = key[:10]
     extr_data.rename(columns=dict_dates,inplace=True)
 
-    print('Organizing training data.')
+    print("Organization des données d'entraînement.")
     X_df,y_df = organize_training_data(prodsites,extr_data,bands)
 
-    print('Extracting area for predictions.')
-    in_data, crs = extract_area_prediction(in_area_file,out_dir,month,connection,bands,download)
+    print("Extraction de zone d'intérêt pour faire des prédictions.")
+    in_data, area, crs, in_data_path = extract_area_prediction(in_area_file,out_dir,month,connection,bands,download)
+    out_path = in_data_path.replace('100m','MODEL')
 
-    print('Applying model to area of interest.')
-    train_model(X_df,y_df,in_data,crs,out_dir,it_mode,degree)
+    print("Application du modèle au zone d'intérêt.")
+    train_model(X_df,y_df,in_data,crs,out_path,area,it_mode,degree)
 
 def extract_training_features(in_pts_file,out_dir,year,connection,download):
     # bandes satellitaires Sentinel-1 et Sentinel-2 dont nous avons besoin
     band_list_s1 = ['VV','VH']
     band_list_s2 = ['B01','B02','B03','B04','B05','B06','B07','B08','B8A','B11','B12','SCL']
     bands = (band_list_s1,band_list_s2)
+
     # creneaux temporaires pour l'extraction des données
     t = [f'{year}-01-01',f'{year}-12-31']
 
-    prodsites = gpd.read_file(in_pts_file) # location des données biomasses dans les fichiers
+    sites_csv = pd.read_csv(in_pts_file) # location des données biomasses dans les fichiers
+    sites_points = [geometry.Point(x,y) for x,y in zip(sites_csv['Long (E)'],sites_csv['Lat (N)'])]
+    prodsites = gpd.GeoDataFrame(sites_csv,crs='epsg:4326',geometry=sites_points)
+    prodsites['geometry'] = buffer(prodsites.geometry.to_crs(3857),30).set_crs(3857).to_crs(4326)
+    prodsites = prodsites.drop(columns='fid')
 
     ### ADD dates to all buffer locations
     all_dates = ['date_fev','date_avr','date_sep']
@@ -52,20 +62,19 @@ def extract_training_features(in_pts_file,out_dir,year,connection,download):
     prodsites['dates'] = prodsites.apply(create_list, axis=1, args=(all_dates,))
     prodsites['biomass'] = prodsites.apply(create_list, axis=1, args=(all_biomass,True))
 
-    bbox_simple = {"west":prodsites.geometry.centroid.x.min()-0.0001,
-                "south":prodsites.geometry.centroid.y.min()-0.0001,
-                "east":prodsites.geometry.centroid.x.max()+0.0001,
-                "north":prodsites.geometry.centroid.y.max()+0.0001}
+    bbox_simple = {"west":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).x.min()-0.0001,
+               "south":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).y.min()-0.0001,
+               "east":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).x.max()+0.0001,
+               "north":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).y.max()+0.0001}
 
     geoms = json.loads(prodsites.explode(index_parts=True).geometry.to_json())
 
     #save points
     points_out = os.path.join('.',out_dir,'points_biomasse.json')
 
-    #extract training points
-    extr_agg = extract_and_save_simple(band_list_s1,band_list_s2,t,bbox_simple,geoms,connection)
-    print(download)
     if download:
+        #extract training points
+        extr_agg = extract_and_save_simple(band_list_s1,band_list_s2,t,bbox_simple,geoms,connection)
         job = extr_agg.create_job(
                 title='extraction_points', out_format="JSON") # Changez le titre pour suivre les étapes d'extraction en ligne
 
@@ -80,9 +89,9 @@ def organize_training_data(prodsites,extr_data,band_lists):
     (band_list_s1, band_list_s2) = band_lists
 
     all_indexes =['VV', 'VH', 'B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08',
-               'B8A', 'B11', 'B12', 'NDVI', 'NDWI', 'GRVI', 'GNDVI', 'NBR',
-       'NBR2', 'NDI54', 'NDRE1', 'STI', 'MSI',  'SAVI', 'MSAVI', 'IRECI',
-       'VV-VH_rolling','VV+VH_rolling']
+                'B8A', 'B11', 'B12', 'NDVI', 'NDWI', 'GRVI', 'GNDVI', 'NBR',
+                'NBR2', 'NDI54', 'NDRE1', 'STI', 'MSI',  'SAVI', 'MSAVI', 'IRECI',
+                'VV-VH_rolling','VV+VH_rolling']
 
     list_l1 = list(np.unique([p.split('_')[0] + '_' + p.split('_')[1] for p in prodsites['ID Point'] if '45_' not in p]))
 
@@ -115,16 +124,20 @@ def organize_training_data(prodsites,extr_data,band_lists):
 
 def extract_area_prediction(in_area_file,out_dir,month,connection,bands,download):
     
-    test_area = gpd.read_file(in_area_file)
-    in_data_path = os.path.join(out_dir,f'test_area_4326_100m.nc')
+    area = gpd.read_file(in_area_file).to_crs(epsg=4326)
+    bounds = area.total_bounds
+
+    in_data_path = os.path.join(out_dir,f"{in_area_file.split('/')[-1].replace('.gpkg','')}_100m.nc")
 
     # IMPORTANT : Il faut selectionner le mois entier pour avoir des prédictions de biomasse correctes
     t_extract = [f'2024-{month}-01', f'2024-{month}-30']
 
-    bbox = {'west':test_area.bounds.values[0][0],
-            'south':test_area.bounds.values[0][1],
-            'east':test_area.bounds.values[0][2],
-            'north':test_area.bounds.values[0][3]}
+    bbox = {'west':bounds[0],
+            'south':bounds[1],
+            'east':bounds[2],
+            'north':bounds[3],
+            'crs':area.crs.to_string()}
+
     extr_area = extract_and_save_simple(bands[0],bands[1],t_extract,bbox,None,connection)
 
     if download:
@@ -137,47 +150,43 @@ def extract_area_prediction(in_area_file,out_dir,month,connection,bands,download
     in_data = xr.open_dataset(in_data_path)
     add_indices(in_data,rolling=True)
     crs = in_data['crs'].attrs['crs_wkt']
-    in_data = in_data.drop_vars(['crs','SCL']).mean(dim='t')
+    in_data = in_data.drop_vars(['crs']).mean(dim='t')
 
-    return in_data, crs
+    return in_data, area, crs, in_data_path
 
-def train_model(X_df,y_df,in_data,crs,out_dir,it_mode,degree=0):
+def train_model(X_df,y_df,in_data,crs,out_path,area,it_mode,degree=0):
     print(f'degré: {degree}')
     if it_mode == 'RF':
         mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode='RF')
         model = get_best_model(X_df[remaining_feats[max(r2_scores,key=r2_scores.get)]],y_df,'RF')
-        predict_and_save(model,in_data,crs,out_dir,it_mode = 'RF',)
+        predict_and_save(model,in_data,crs,out_path,area.geometry,it_mode = 'RF',)
         
     if it_mode == 'PLS':
         mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode='PLS')
         model = get_best_model(X_df[remaining_feats[21]],y_df,'PLS',degree)
         coef = dict(zip(remaining_feats[21],model.coef_[0]))
-        predict_and_save(model,in_data,crs,out_dir,it_mode='PLS',coef=coef)
+        predict_and_save(model,in_data,crs,out_path,area.geometry,it_mode='PLS',coef=coef)
 
     if it_mode == 'LR' and degree == 1:
         mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode='LR',degree=degree)
         model = get_best_model(X_df[remaining_feats[max(r2_scores,key=r2_scores.get)]],y_df,'LR',degree)
         coef = dict(zip(remaining_feats[max(r2_scores,key=r2_scores.get)],model.coef_[0]))
-        predict_and_save(model,in_data,crs,out_dir,it_mode='LR',coef=coef,degree=degree)
+        predict_and_save(model,in_data,crs,out_path,area.geometry,it_mode='LR',coef=coef,degree=degree)
 
     if it_mode == 'LR' and degree > 1:
         mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode='LR',degree=degree)
         model,poly = get_best_model(X_df[remaining_feats[max(r2_scores,key=r2_scores.get)]],y_df,'LR',degree)
         coef = dict(zip(poly.get_feature_names_out(),model.coef_[0]))
-        predict_and_save(model,in_data,crs,out_dir,it_mode='LR',coef=coef,degree=degree)
+        predict_and_save(model,in_data,crs,out_path,area.geometry,it_mode='LR',coef=coef,degree=degree)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-ip', '--in_points', help="fichier des points d'entraînement")
-    parser.add_argument('-ia', '--in_area', help="fichier polygone de zone d'intérêt")
-    parser.add_argument('-od', '--out_dir', help="dossier pour les produits")
-    parser.add_argument('-ty', '--train_year', help="année d'entraînement (i.e. 2023)")
-    parser.add_argument('-pm', '--predict_month', help="mois de prédiction (i.e. juin = '06')")
-    parser.add_argument('-m', '--mode', help="type de modèle")
-    parser.add_argument('-deg', '--degree', default=0, type=int, help="degré du modèle si c'est LR ou Poly (seulement 1, 2, ou 3)")
-    parser.add_argument('-down', '--download', action='store_true', help="télécharger les résultats")
-    args = parser.parse_args()
+    import json
 
-    main(args.in_points,args.in_area,args.out_dir,args.train_year,args.predict_month,args.mode,args.degree,args.download)
+    with open(r'./test_config.json') as cfile:
+        config = json.loads(cfile.read())
+    
+    main(config['in_points'], config['in_area'], config['out_dir'],
+        config['train_year'], config['predict_month'], config['mode'],
+        config['degree'], config['download'], config['point_extract'])

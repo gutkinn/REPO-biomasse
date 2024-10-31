@@ -1,0 +1,11 @@
+{
+   "in_points":"./in_data/donnees_sites_test.csv",
+   "in_area":"./in_data/test_location.gpkg",
+   "out_dir":"./out_data",
+   "train_year":2023,
+   "predict_month":"06",
+   "mode":"LR",
+   "degree":1,
+   "download":false,
+   "point_extract":false
+}
