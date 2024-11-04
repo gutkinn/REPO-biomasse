@@ -10,7 +10,14 @@ import xarray as xr
 from helpers import *
 from shapely import geometry, buffer
 
-def main(in_pts_file,in_area_file,out_dir,year,month,it_mode,degree,download,point_extract):
+def main(in_pts_file,in_area_file,out_dir,year,month,model,point_extract,download):
+
+    mode,degree = select_model(model)
+
+    prodsites = create_gpkg(in_pts_file)
+    geoms, bbox_simple, prodsites, band_list_s1, band_list_s2 = generate_geometries(prodsites)
+    points_out = os.path.join(out_dir,in_pts_file.replace('csv','.json'))
+
     print("Établissant une connexion à openEO.")
     connection = openeo.connect("https://openeo.dataspace.copernicus.eu").authenticate_oidc()
 
@@ -21,14 +28,7 @@ def main(in_pts_file,in_area_file,out_dir,year,month,it_mode,degree,download,poi
         print("Points d'entraînement déjà extraits.")
         prodsites, points_out, bands = extract_training_features(in_pts_file,out_dir,year,connection,point_extract)
 
-    dict_dates = {}
-
-    extr_data = pd.concat([prodsites['ID Point'],pd.read_json(points_out,convert_axes=False)],axis=1)
-    extr_data = extr_data[['ID Point']+list(extr_data.keys()[1:].sort_values())]
-
-    for key in extr_data.columns.values[1:]:
-        dict_dates[key] = key[:10]
-    extr_data.rename(columns=dict_dates,inplace=True)
+    extr_data = open_dataset(prodsites,points_out)
 
     print("Organization des données d'entraînement.")
     X_df,y_df = organize_training_data(prodsites,extr_data,bands)
@@ -38,7 +38,7 @@ def main(in_pts_file,in_area_file,out_dir,year,month,it_mode,degree,download,poi
     out_path = in_data_path.replace('100m','MODEL')
 
     print("Application du modèle au zone d'intérêt.")
-    train_model(X_df,y_df,in_data,crs,out_path,area,it_mode,degree)
+    train_model(X_df,y_df,in_data,crs,out_path,area,mode,degree)
 
 def extract_training_features(in_pts_file,out_dir,year,connection,download):
     # bandes satellitaires Sentinel-1 et Sentinel-2 dont nous avons besoin
@@ -178,15 +178,3 @@ def train_model(X_df,y_df,in_data,crs,out_path,area,it_mode,degree=0):
         model,poly = get_best_model(X_df[remaining_feats[max(r2_scores,key=r2_scores.get)]],y_df,'LR',degree)
         coef = dict(zip(poly.get_feature_names_out(),model.coef_[0]))
         predict_and_save(model,in_data,crs,out_path,area.geometry,it_mode='LR',coef=coef,degree=degree)
-
-
-if __name__ == "__main__":
-    import argparse
-    import json
-
-    with open(r'./test_config.json') as cfile:
-        config = json.loads(cfile.read())
-    
-    main(config['in_points'], config['in_area'], config['out_dir'],
-        config['train_year'], config['predict_month'], config['mode'],
-        config['degree'], config['download'], config['point_extract'])

@@ -16,6 +16,24 @@ import geopandas as gpd
 import json
 from scipy import stats
 
+def select_model(model):
+    if model == 'RF' or model == 'PLS':
+        mode = model
+        degree = None
+    elif model == 'LR':
+        mode = model
+        degree = 1
+    elif model == 'PR2':
+        mode='LR'
+        degree = 2
+    elif model == 'PR3':
+        mode='LR'
+        degree = 3
+    else:
+        raise Exception('Erreur : modèle incorrect')
+    
+    return mode, degree
+
 def create_gpkg(in_csv):
     sites_csv = pd.read_csv(in_csv)
     sites_points = [geometry.Point(x,y) for x,y in zip(sites_csv['Long (E)'],sites_csv['Lat (N)'])]
@@ -66,7 +84,34 @@ def generate_geometries_zone(loc,t_extract):
             'north':bounds[3],
             'crs':area.crs.to_string()}
 
-    return bbox, mois, in_data_path
+    return bbox, area, mois, in_data_path
+
+def get_in_data(in_data_path):
+    in_data = xr.open_dataset(in_data_path)
+    add_indices(in_data,rolling=True)
+    in_crs = in_data['crs'].attrs['crs_wkt']
+    in_data = in_data.drop_vars(['crs']).mean(dim='t')
+    return in_data, in_crs
+
+def generate_predictions(model_type, X_df, y_df, in_data, in_crs, out_path, area):
+    mode, degree = select_model(model_type)
+
+    if mode == 'RF':
+        mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode=mode)
+        model = get_best_model(X_df[remaining_feats[max(r2_scores,key=r2_scores.get)]],y_df,mode)
+        predict_and_save(model,in_data,in_crs,out_path,area.geometry,it_mode = mode)
+    elif mode == 'PLS':
+        mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode=mode)
+        model = get_best_model(X_df[remaining_feats[21]],y_df,mode,degree)
+        coef = dict(zip(remaining_feats[21],model.coef_[0]))
+        predict_and_save(model,in_data,in_crs,out_path,area.geometry,it_mode=mode,coef=coef)
+    else:
+        mae_scores,r2_scores,remaining_feats,preds = iterate_train_test(X_df,y_df,split=0.25,it_mode=mode,degree=degree)
+        model = get_best_model(X_df[remaining_feats[max(r2_scores,key=r2_scores.get)]],y_df,mode,degree)
+        coef = dict(zip(remaining_feats[max(r2_scores,key=r2_scores.get)],model.coef_[0]))
+        predict_and_save(model,in_data,in_crs,out_path,area.geometry,it_mode=mode,coef=coef,degree=degree)        
+
+
 
 def clean_data(prodsites,extr_data,all_indexes,band_list_s1,band_list_s2):
     # ici nous allons agréger les données biomasse au niveau du pixel (2 groupes dans chaque pixel)
@@ -497,21 +542,8 @@ def print_models(X_df,y_df):
     return {'LR':m_LR,'PR2':m_PR2,'PR3':m_PR3,'PLS':m_PLS,'RF':m_RF}
 
 def draw_plot(model,X_df,y_df):
-    if model == 'RF' or model == 'PLS':
-        mode = model
-        degree = None
-    elif model == 'LR':
-        mode = model
-        degree = 1
-    elif model == 'PR2':
-        mode='LR'
-        degree = 2
-    elif model == 'PR3':
-        mode='LR'
-        degree = 3
-    else:
-        raise Exception('Erreur : modèle incorrect')
-        
+
+    mode,degree = select_model(model)
 
     mae_scores,r2_scores,remaining_feats,[y_test,preds] = iterate_train_test(X_df,y_df,split=0.25,it_mode=mode,degree=degree)
     f,ax = plt.subplots(figsize=(6,5))
@@ -530,3 +562,4 @@ def draw_plot(model,X_df,y_df):
     plt.tight_layout()
     plt.savefig(f'./out_data/precision_{mode}_{degree}.png')
     plt.show()
+
