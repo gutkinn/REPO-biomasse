@@ -11,6 +11,105 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import os
+from shapely import geometry, buffer
+import geopandas as gpd
+import json
+from scipy import stats
+
+def create_gpkg(in_csv):
+    sites_csv = pd.read_csv(in_csv)
+    sites_points = [geometry.Point(x,y) for x,y in zip(sites_csv['Long (E)'],sites_csv['Lat (N)'])]
+    sites_gdf = gpd.GeoDataFrame(sites_csv,crs='epsg:4326',geometry=sites_points)
+    sites_gdf['geometry'] = buffer(sites_gdf.geometry.to_crs(3857),30).set_crs(3857).to_crs(4326)
+    out_gpkg = in_csv.replace('.csv','.gpkg')
+    sites_gdf.to_file(out_gpkg)
+
+    prodsites = gpd.read_file(out_gpkg)
+
+    return prodsites
+
+def generate_geometries(prodsites):
+
+    # bandes satellitaires Sentinel-1 et Sentinel-2 dont nous aurons besoin
+    band_list_s1 = ['VV','VH']
+    band_list_s2 = ['B01','B02','B03','B04','B05','B06','B07','B08','B8A','B11','B12','SCL']
+
+    # ici nous réorganisons les données de biomasse et les dates de collection
+    all_dates = ['date_fev','date_avr','date_sep']
+    all_biomass = ['biomass_fev','biomass_avr','biomass_sep']
+    prodsites['dates'] = prodsites.apply(create_list,axis=1,args=(all_dates,))
+    prodsites['biomass'] = prodsites.apply(create_list,axis=1,args=(all_biomass,True))
+
+    # création des géométries pour l'extraction des données satellitaires 
+    bbox_simple = {"west":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).x.min()-0.0001,
+                   "south":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).y.min()-0.0001,
+                   "east":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).x.max()+0.0001,
+                   "north":prodsites.geometry.to_crs(crs=3857).centroid.to_crs(4326).y.max()+0.0001}
+
+    geoms = json.loads(prodsites.explode(index_parts=True).geometry.to_json())
+
+    return geoms, bbox_simple, prodsites, band_list_s1, band_list_s2
+
+def generate_geometries_zone(loc,t_extract):
+
+    mois = t_extract[0].split('-')[1]
+    if loc == 'test':
+        area = gpd.read_file(f'./in_data/test_zone.gpkg').to_crs(epsg=4326)
+    else:
+        area = gpd.read_file(f'./in_data/communes/{loc}.gpkg').to_crs(epsg=4326)
+    bounds = area.total_bounds
+    in_data_path = os.path.join('.','out_data',f'{loc}_{mois}_100m.nc')
+    
+    bbox = {'west':bounds[0],
+            'south':bounds[1],
+            'east':bounds[2],
+            'north':bounds[3],
+            'crs':area.crs.to_string()}
+
+    return bbox, mois, in_data_path
+
+def clean_data(prodsites,extr_data,all_indexes,band_list_s1,band_list_s2):
+    # ici nous allons agréger les données biomasse au niveau du pixel (2 groupes dans chaque pixel)
+    list_l1 = list(np.unique([p.split('_')[0] + '_' + p.split('_')[1] for p in prodsites['ID Point'] if '45_' not in p]))
+
+    biomass_list = []
+    i=0
+
+    for idx_l1 in list_l1:
+        
+        merge_biomass, merge_rows = match_satellite_biomass(idx_l1,extr_data,prodsites,band_list_s1 + band_list_s2)
+        biomass_vals, matched_index_vals = generate_corr(merge_biomass,merge_rows,all_indexes,0)
+        biomass_list+=biomass_vals
+
+        if i==0:
+            index_list = np.array(matched_index_vals)
+        else:
+            index_list = np.append(index_list,np.array(matched_index_vals),axis=1)
+        i+=1
+            
+    # réorganisation des données temporelles (t1 = février, t2 = avril, t3 = septembre)
+    all_l1_time = np.array([[l+'_t1',l+'_t2',l+'_t3'] for l in list_l1]).reshape(index_list.shape[1])
+
+    # nettoyage des données biomasse, données avec score z > 2 sont retirées
+    z_b = np.abs(stats.zscore(biomass_list))
+    z_b_o = np.where(z_b > 2)[0]
+    index_list = np.array(pd.DataFrame(index_list).drop(columns=z_b_o))
+    biomass_list = np.delete(biomass_list,z_b_o)
+    all_l1_time = np.delete(all_l1_time,z_b_o)
+
+    return index_list, biomass_list, all_l1_time
+
+def open_dataset(prodsites,points_out):
+    dict_dates = {}
+
+    extr_data = pd.concat([prodsites['ID Point'],pd.read_json(points_out,convert_axes=False)],axis=1)
+    extr_data = extr_data[['ID Point']+list(extr_data.keys()[1:].sort_values())]
+
+    for key in extr_data.columns.values[1:]:
+        dict_dates[key] = key[:10]
+    extr_data.rename(columns=dict_dates,inplace=True)
+
+    return extr_data
 
 def create_id_point(row):
     return f"{row['Site']}_{row['Pixel']}_{row['Groupe']}"
@@ -397,9 +496,22 @@ def print_models(X_df,y_df):
 
     return {'LR':m_LR,'PR2':m_PR2,'PR3':m_PR3,'PLS':m_PLS,'RF':m_RF}
 
-def draw_plot(mode,degree,X_df,y_df):
-    if mode == 'RF' or mode == 'PLS':
+def draw_plot(model,X_df,y_df):
+    if model == 'RF' or model == 'PLS':
+        mode = model
         degree = None
+    elif model == 'LR':
+        mode = model
+        degree = 1
+    elif model == 'PR2':
+        mode='LR'
+        degree = 2
+    elif model == 'PR3':
+        mode='LR'
+        degree = 3
+    else:
+        raise Exception('Erreur : modèle incorrect')
+        
 
     mae_scores,r2_scores,remaining_feats,[y_test,preds] = iterate_train_test(X_df,y_df,split=0.25,it_mode=mode,degree=degree)
     f,ax = plt.subplots(figsize=(6,5))
