@@ -111,9 +111,7 @@ def generate_predictions(model_type, X_df, y_df, in_data, in_crs, out_path, area
         coef = dict(zip(remaining_feats[max(r2_scores,key=r2_scores.get)],model.coef_[0]))
         predict_and_save(model,in_data,in_crs,out_path,area.geometry,it_mode=mode,coef=coef,degree=degree)        
 
-
-
-def clean_data(prodsites,extr_data,all_indexes,band_list_s1,band_list_s2):
+def preprocess_data(prodsites,extr_data,all_indexes,band_list_s1,band_list_s2):
     # ici nous allons agréger les données biomasse au niveau du pixel (2 groupes dans chaque pixel)
     list_l1 = list(np.unique([p.split('_')[0] + '_' + p.split('_')[1] for p in prodsites['ID Point'] if '45_' not in p]))
 
