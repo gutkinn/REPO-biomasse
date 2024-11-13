@@ -450,6 +450,15 @@ def adjust_biomass(in_data):
     in_data = ((in_data * 30) / 0.5) / 3
     return in_data
 
+def generate_formula(coef,intercept):
+    coef_str = ''
+    for c in coef:
+        coef_str += f'({coef[c]} * {c})'
+        if c != list(coef.keys())[-1]:
+            coef_str += ' + '
+    formula = str(intercept) + ' + ' + coef_str
+    return formula
+
 def predict_and_save(model,in_data,crs,out_path,geom,it_mode,coef=None,degree=0):
     if it_mode == 'PLS':
         pred = xr.DataArray(data = model.predict(
@@ -461,7 +470,6 @@ def predict_and_save(model,in_data,crs,out_path,geom,it_mode,coef=None,degree=0)
                                   x=('x',in_data[model.feature_names_in_]['x'].data)))
         pred = pred.to_dataset(name='biomasse')
         pred = pred.where(pred['biomasse'] > 0, 0)
-        #pred['biomasse'] = adjust_biomass(pred['biomasse'])
         pred.rio.write_crs(crs, inplace=True)
         pred = pred.rio.clip(geom,crs,drop=True)
         pred['biomasse'].plot()
@@ -471,10 +479,16 @@ def predict_and_save(model,in_data,crs,out_path,geom,it_mode,coef=None,degree=0)
         coef_calcs = get_coef_calcs(in_data,coef,degree)
         intercept = model.intercept_[0]
 
+        formula = generate_formula(coef,intercept)
+        with open(os.path.join('.','out_data',f'formule_{it_mode}{degree}.txt'),'w') as f:
+            f.write('Formule régression linéaire:')
+            f.write('\n')
+            f.write(formula)
+        f.close()
+
         pred = intercept + sum(coef_calcs)
         pred = pred.to_dataset(name='biomasse')
         pred = pred.where(pred['biomasse'] > 0, 0)
-        #pred['biomasse'] = adjust_biomass(pred['biomasse'])
         pred.rio.write_crs(crs, inplace=True)
         pred = pred.rio.clip(geom,crs,drop=True)
         pred['biomasse'].plot()
@@ -491,7 +505,6 @@ def predict_and_save(model,in_data,crs,out_path,geom,it_mode,coef=None,degree=0)
                                   x=('x',in_data['x'].data)))
         pred = pred.to_dataset(name='biomasse')
         pred = pred.where(pred['biomasse']>0,0)
-        #pred['biomasse'] = adjust_biomass(pred['biomasse'])
         pred.rio.write_crs(crs, inplace=True)
         pred = pred.rio.clip(geom,crs,drop=True)
         pred['biomasse'].plot()

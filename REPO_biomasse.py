@@ -69,8 +69,11 @@ def extract_training_features(in_pts_file,out_dir,year,connection,download):
 
     geoms = json.loads(prodsites.explode(index_parts=True).geometry.to_json())
 
+    in_pts_rep = in_pts_file.split('/')[-1].replace('donnees_sites','points_biomasse').replace('.csv','.json')
+
     #save points
-    points_out = os.path.join('.',out_dir,'points_biomasse.json')
+    points_out = os.path.join('.',out_dir,in_pts_rep)
+                              
 
     if download:
         #extract training points
@@ -127,10 +130,23 @@ def extract_area_prediction(in_area_file,out_dir,month,connection,bands,download
     area = gpd.read_file(in_area_file).to_crs(epsg=4326)
     bounds = area.total_bounds
 
-    in_data_path = os.path.join(out_dir,f"{in_area_file.split('/')[-1].replace('.gpkg','')}_100m.nc")
+    in_data_path = os.path.join(out_dir,f"{in_area_file.split('/')[-1].replace('.gpkg','')}_{month}_100m.nc")
 
     # IMPORTANT : Il faut selectionner le mois entier pour avoir des prédictions de biomasse correctes
-    t_extract = [f'2024-{month}-01', f'2024-{month}-30']
+    m31 = ['01','03','05','07','08','10','12']
+    m30 = ['04','06','09','11']
+    m28 = ['02']
+
+    if month in m31:
+        eday = '31'
+    elif month in m30:
+        eday = '30'
+    elif month in m28:
+        eday = '28'
+    else:
+        raise Exception('ERROR: wrong month format')
+    
+    t_extract = [f'2024-{month}-01', f'2024-{month}-{eday}']
 
     bbox = {'west':bounds[0],
             'south':bounds[1],
